@@ -66,3 +66,44 @@ example_entry = X_train.iloc[0].to_dict()
 similar_entries = find_similar_entries(example_entry)
 for identifier, score in similar_entries.items():
     print(f"{identifier}: {score}% Similarity")
+
+# Model Evaluation
+
+from sklearn.cluster import KMeans
+
+
+# Cluster the data to define 'true' similarities
+kmeans = KMeans(n_clusters=10, random_state=42).fit(preprocessor.transform(data))
+data['cluster_label'] = kmeans.labels_
+
+# Group data by clusters to define true similarity groups
+true_groups = data.groupby('cluster_label').apply(lambda x: list(x.index)).tolist()
+
+
+def find_similar_entries(entry_data, top_n=10):
+    transformed_entry = model_pipeline.named_steps['preprocessor'].transform(pd.DataFrame([entry_data]))
+    transformed_entry = model_pipeline.named_steps['svd'].transform(transformed_entry)
+    distances, indices = model_pipeline.named_steps['knn'].kneighbors(transformed_entry, n_neighbors=top_n)
+    return [X_train.index[idx] for idx in indices[0]]
+
+# Apply the function to test data
+predictions = [find_similar_entries(X_test.iloc[i].to_dict(), top_n=10) for i in range(len(X_test))]
+
+
+# Function to calculate Precision@k
+def precision_at_k(true_labels, predictions, k):
+    precision_scores = []
+    for true, pred in zip(true_labels, predictions):
+        true_set = set(true)
+        pred_set = set(pred[:k])
+        precision = len(true_set & pred_set) / k
+        precision_scores.append(precision)
+    return np.mean(precision_scores)
+
+# Map test data to its true cluster group
+test_true_labels = [data[data.index == idx]['cluster_label'].iloc[0] for idx in X_test.index]
+test_true_labels = [[idx for idx in data[data['cluster_label'] == label].index] for label in test_true_labels]
+
+# Calculate Precision@5
+precision_score = precision_at_k(test_true_labels, predictions, 5)
+print(f"Precision@5: {precision_score}")
