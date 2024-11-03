@@ -123,3 +123,76 @@ test_true_labels = [[idx for idx in data[data['cluster_label'] == label].index] 
 # Calculate Precision@5
 precision_score = precision_at_k(test_true_labels, predictions, 5)
 print(f"Precision@5: {precision_score}")
+
+
+
+
+# TFIDf and Cosine Similiarity
+
+import pandas as pd
+import numpy as np
+import random
+from sklearn.preprocessing import StandardScaler
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
+
+
+# Identify categorical and numerical columns
+categorical_cols = data.select_dtypes(include=['object']).columns.tolist()
+numerical_cols = data.select_dtypes(include=['int64', 'float64']).columns.tolist()
+
+# Step 1: Handle missing values and combine all categorical and numerical features into a single text representation
+data_combined = data[categorical_cols].fillna('').astype(str).apply(lambda x: ' '.join(x), axis=1) + ' ' + \
+                data[numerical_cols].fillna(0).astype(str).apply(lambda x: ' '.join(x), axis=1)
+
+# Assign the final combined text to a new 'combined_text' column
+data['combined_text'] = data_combined
+
+# Step 2: Process categorical features using TF-IDF
+tfidf_vectorizer = TfidfVectorizer()
+tfidf_matrix = tfidf_vectorizer.fit_transform(data['combined_text'])
+
+# Step 3: Handle NaN values in numerical data globally and scale numerical features
+data[numerical_cols] = data[numerical_cols].fillna(0)
+scaler = StandardScaler()
+scaled_numerical_features = scaler.fit_transform(data[numerical_cols])
+
+# Define function for weighted similarity combining categorical and numerical features
+def find_similar_entries_weighted(entry_data, top_n=5, weight_cat=0.7, weight_num=0.3):
+    # Convert entry data to a similar format
+    entry_text = ' '.join([str(entry_data.get(col, '')) for col in categorical_cols + numerical_cols])
+    entry_vector_cat = tfidf_vectorizer.transform([entry_text])
+    cat_similarity_scores = cosine_similarity(entry_vector_cat, tfidf_matrix).flatten()
+    
+    # Process numerical features with NaN values filled
+    entry_numerical_df = pd.DataFrame([entry_data], columns=numerical_cols).fillna(0).astype(float)
+    entry_vector_num = scaler.transform(entry_numerical_df)
+    num_similarity_scores = cosine_similarity(entry_vector_num, scaled_numerical_features).flatten()
+    
+    # Combine similarity scores using weights for categorical and numerical components
+    combined_similarity = (weight_cat * cat_similarity_scores) + (weight_num * num_similarity_scores)
+    
+    # Retrieve top_n similar entries by combined similarity score
+    top_indices = combined_similarity.argsort()[-top_n:][::-1]
+    top_scores = combined_similarity[top_indices]
+    
+    similar_entries = {
+        data.index[idx]: round(score * 100, 2)
+        for idx, score in zip(top_indices, top_scores)
+    }
+    
+    return similar_entries
+
+# Create a mixed new entry by sampling values from 5 random entries
+random_rows = data.sample(5, random_state=42).to_dict(orient='records')
+mixed_entry = {col: random.choice([row[col] for row in random_rows]) for col in categorical_cols + numerical_cols}
+
+# Run the similarity function with the mixed entry
+similar_entries_mixed = find_similar_entries_weighted(mixed_entry)
+
+# Display similar entries and their similarity scores
+for identifier, score in similar_entries_mixed.items():
+    print(f"{identifier}: {score}% Similarity")
+
+
