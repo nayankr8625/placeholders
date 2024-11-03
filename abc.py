@@ -45,27 +45,43 @@ X_train, X_test = train_test_split(data, test_size=0.2, random_state=42)
 # Fitting the model
 model_pipeline.fit(X_train, X_train.index)  # Use index for identifying records post-prediction
 
-# Function to find similar entries
-def find_similar_entries(entry_data, top_n=5):
-    # Transform and predict the nearest neighbors for the entry data
-    transformed_entry = model_pipeline.named_steps['preprocessor'].transform(pd.DataFrame([entry_data]))
-    transformed_entry = model_pipeline.named_steps['svd'].transform(transformed_entry)
-    distances, indices = model_pipeline.named_steps['knn'].kneighbors(transformed_entry, n_neighbors=top_n)
+# Prediction
+def find_similar_entries(data, top_n=5):
+    # Check and parse JSON input
+    if isinstance(data, str):
+        try:
+            # Attempt to parse JSON string as DataFrame or as a single JSON record
+            data = pd.read_json(data, orient='records')
+        except ValueError:
+            # Handle the case where the JSON data is a single object
+            data = pd.DataFrame([json.loads(data)])
     
-    # Calculate normalized similarity scores
-    max_dist = max(distances[0]) if max(distances[0]) > 0 else 1
-    similarity_scores = {
-        X_train.index[idx]: round((1 - dist / max_dist) * 100, 2) 
-        for idx, dist in zip(indices[0], distances[0])
-    }
+    # Ensure input is in DataFrame format
+    if isinstance(data, pd.Series):
+        data = pd.DataFrame([data])  # Convert a single series into a DataFrame with one row
     
-    return similarity_scores
-
-# Example usage
-example_entry = X_train.iloc[0].to_dict()
-similar_entries = find_similar_entries(example_entry)
-for identifier, score in similar_entries.items():
-    print(f"{identifier}: {score}% Similarity")
+    results = {}  # Dictionary to store results for each entry
+    
+    # Iterate through each row in the DataFrame
+    for index, row in data.iterrows():
+        # Transform the current row
+        transformed_row = model_pipeline.named_steps['preprocessor'].transform(pd.DataFrame([row]))
+        transformed_row = model_pipeline.named_steps['svd'].transform(transformed_row)
+        
+        # Compute nearest neighbors
+        distances, indices = model_pipeline.named_steps['knn'].kneighbors(transformed_row, n_neighbors=top_n)
+        
+        # Calculate normalized similarity scores
+        max_dist = max(distances[0]) if max(distances[0]) > 0 else 1
+        similarity_scores = {
+            X_train.index[idx]: round((1 - dist / max_dist) * 100, 2)
+            for idx, dist in zip(indices[0], distances[0])
+        }
+        
+        # Store similarity scores using the DataFrame index as key
+        results[index] = similarity_scores
+    
+    return results
 
 # Model Evaluation
 
