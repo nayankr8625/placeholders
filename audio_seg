@@ -1,0 +1,109 @@
+import os
+from azure.cognitiveservices.speech import (
+    AudioDataStream,
+    SpeechConfig,
+    SpeechSynthesizer,
+    SpeechSynthesisOutputFormat,
+)
+from services import measure_time, logger
+from xml.etree import ElementTree as ET
+from pydub import AudioSegment
+
+@measure_time
+def split_ssml_preserve_format(xml_script, max_characters=2000):
+    """
+    Splits an SSML string into smaller chunks, preserving the XML format and structure.
+    """
+    # Parse the SSML string
+    root = ET.fromstring(xml_script)
+    namespace = root.tag.split('}')[0] + '}'  # Extract namespace
+    speak_tag_name = root.tag.split('}')[-1]  # Extract the tag name without namespace
+
+    # Collect all child elements under <speak>
+    children = list(root)
+    chunks = []
+    current_chunk = []
+    current_length = 0
+
+    for child in children:
+        serialized = ET.tostring(child, encoding="unicode")
+        if current_length + len(serialized) > max_characters:
+            # Save the current chunk
+            chunks.append(current_chunk)
+            current_chunk = []
+            current_length = 0
+        current_chunk.append(child)
+        current_length += len(serialized)
+
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    # Convert chunks back to valid SSML
+    chunk_files = []
+    for i, chunk in enumerate(chunks):
+        # Create a new root element with the correct namespace
+        chunk_root = ET.Element(f"{namespace}{speak_tag_name}", attrib={"xmlns": "https://www.w3.org/2001/10/synthesis"})
+        chunk_root.attrib.update(root.attrib)  # Copy attributes from the original root
+
+        # Add elements to the chunk root
+        for element in chunk:
+            chunk_root.append(element)
+
+        # Serialize each chunk as a string
+        chunk_files.append(ET.tostring(chunk_root, encoding="unicode"))
+
+    return chunk_files
+
+def concatenate_audio_files(audio_files, output_file):
+    """
+    Concatenates multiple audio files into one. Requires `pydub`.
+    """
+    combined = AudioSegment.empty()
+    for audio_file in audio_files:
+        segment = AudioSegment.from_file(audio_file)
+        combined += segment
+    combined.export(output_file, format="wav")
+
+@measure_time
+def convert_to_audiov2(speech_config: SpeechConfig, xml_script: str, file_path: str):
+    """
+    Converts an SSML script into audio, handling large scripts by splitting and concatenating.
+    """
+    logger.debug("Starting audio generation process.")
+    audio_format = "Riff24Khz16BitMonoPcm"
+
+    speech_config.set_speech_synthesis_output_format(
+        SpeechSynthesisOutputFormat[audio_format]
+    )
+    synthesizer = SpeechSynthesizer(speech_config=speech_config, audio_config=None)
+
+    # Split the SSML script into smaller chunks
+    chunks = split_ssml_preserve_format(xml_script, max_characters=2000)
+
+    # Generate audio for each chunk
+    audio_files = []
+    for i, chunk in enumerate(chunks):
+        temp_file = f"{file_path}_part_{i + 1}.wav"
+        result = synthesizer.speak_ssml_async(chunk).get()
+
+        if result.reason != result.reason.SynthesizingAudioCompleted:
+            if result.reason == result.reason.Canceled:
+                cancellation_details = result.cancellation_details
+                logger.error(f"Speech synthesis canceled: {cancellation_details.reason}")
+                if cancellation_details.error_details:
+                    logger.error(f"Error details: {cancellation_details.error_details}")
+            raise Exception("Speech synthesis failed for a chunk.")
+
+        stream = AudioDataStream(result)
+        stream.save_to_wav_file(temp_file)
+        audio_files.append(temp_file)
+        logger.debug(f"Generated audio chunk saved to {temp_file}.")
+
+    # Concatenate all audio chunks into a single file
+    concatenate_audio_files(audio_files, file_path)
+    logger.info(f"Podcast Audio Generation Completed. File saved to {file_path}.")
+
+    # Cleanup temporary files
+    for temp_file in audio_files:
+        os.remove(temp_file)
+    logger.debug("Temporary files cleaned up.")
